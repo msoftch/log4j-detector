@@ -60,6 +60,12 @@ import sun.jvmstat.monitor.VmIdentifier;
  * 
  */
 public class Detector implements ClassFileTransformer {
+    /** Type string for Log4j v1 (legacy) detections. */
+    private static final String LEGACY_LOG4J_CANDIDATE = "LegacyLog4jCandidate";
+
+    /** Type string for Log4j v2 detections. */
+    private static final String LOG4J_CANDIDATE = "Log4jCandidate";
+
     /** Last part of the class name of a log4j V1 logger. */
     private static final String LOGGER_V1 = ".log4j.Logger";
 
@@ -148,7 +154,12 @@ public class Detector implements ClassFileTransformer {
      */
     private static File getOutputPath(String agentArgs) {
         if (agentArgs != null && agentArgs.startsWith(OUTPUT_PATH + "=")) {
-            return new File(agentArgs.substring(OUTPUT_PATH.length() + 1));
+            final File f = new File(agentArgs.substring(OUTPUT_PATH.length() + 1));
+            final File parent = f.getParentFile();
+            if (parent != null) {
+                parent.mkdirs();
+            }
+            return f;
         }
         return null;
     }
@@ -164,9 +175,9 @@ public class Detector implements ClassFileTransformer {
             final String className = c.getName();
             // use hard coded checks - should be somewhat faster than a for loop
             if (className.endsWith(JNDI_LOOKUP_CLASS) || className.endsWith(LOGGER_V2)) {
-                log("Log4jcandidate", className, c.getClassLoader());
+                log(LOG4J_CANDIDATE, className, c.getClassLoader());
             } else if (className.endsWith(LOGGER_V1)) {
-                log("LegacyLog4jCandidate", className, c.getClassLoader());
+                log(LEGACY_LOG4J_CANDIDATE, className, c.getClassLoader());
             }
         }
     }
@@ -213,9 +224,9 @@ public class Detector implements ClassFileTransformer {
                 // use hard coded checks - should be somewhat faster than a for
                 // loop
                 if (className.endsWith(JNDI_LOOKUP_CLASS_INT) || className.endsWith(LOGGER_V2_INT)) {
-                    log("Log4jcandidate", className, loader);
+                    log(LOG4J_CANDIDATE, className, loader);
                 } else if (className.endsWith(LOGGER_V1_INT)) {
-                    log("LegacyLog4jCandidate", className, loader);
+                    log(LEGACY_LOG4J_CANDIDATE, className, loader);
                 }
             }
         } catch (Exception e) {

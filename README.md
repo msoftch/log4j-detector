@@ -32,7 +32,7 @@ If the *Runtime attachment* does not work for your case, then use the static att
 
 Simply specify the java agent in your java command line:
 
-    -javaagent:log4j-detector.jar[=outputPath=<base/output/path/for/log>]
+    -javaagent:log4j-detector.jar[=outputPath=<path/to/log/file>]
   
 thus the final line would look something like
   
