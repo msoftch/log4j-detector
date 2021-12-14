@@ -6,7 +6,6 @@
   <version>0.0.1-SNAPSHOT</version>
 
   <properties>
-  <!-- <java.home>/usr/lib/jvm/java-11-openjdk-amd64/jre</java.home> -->
     <tools.jar>${java.home}/../lib/tools.jar</tools.jar>
   </properties>
 
@@ -21,14 +20,13 @@
   </dependencies>
 
   <build>
+    <finalName>${artifactId}</finalName>
     <plugins>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
         <configuration>
-            <source>1.8</source>
-          <target>1.8</target> 
-              <!--  <source>1.11</source>
-          <target>1.11</target>--> 
+          <source>1.8</source>
+          <target>1.8</target>
         </configuration>
       </plugin>
       <plugin>
