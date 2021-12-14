@@ -1,3 +1,18 @@
+/*
+ * Copyright 2021 M. Hautle
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ * 
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package log4jdetector;
 
 import java.io.ByteArrayOutputStream;
@@ -123,6 +138,7 @@ public class Detector implements ClassFileTransformer {
     public static void agentmain(String agentArgs, Instrumentation inst) throws Exception {
         System.out.println("<Running log4jdetector agent>");
         new Detector(getOutputPath(agentArgs)).printLoadedClasses(inst);
+        System.out.println("<log4jdetector done>");
     }
 
     /**
@@ -155,6 +171,16 @@ public class Detector implements ClassFileTransformer {
         }
     }
 
+    /**
+     * Log the given class and its location.
+     * 
+     * @param type
+     *            The entry type
+     * @param clazz
+     *            The class name
+     * @param cl
+     *            The used classloader or null
+     */
     private void log(String type, String clazz, ClassLoader cl) {
         for (PrintStream out : log) {
             out.println(type + ": " + clazz + " @" + resolvePath(clazz, cl));
@@ -252,7 +278,12 @@ public class Detector implements ClassFileTransformer {
     }
 
     /**
-     * @return
+     * Put this class in a agent jar - used for runtime instrumentation.<br>
+     * We do this instead of assuming that we are loaded from a jar, to allow
+     * executing the runtime instrumentation to be started from an IDE (i.e.
+     * without building the jar first).
+     * 
+     * @return The jar file
      * @throws IOException
      * @throws FileNotFoundException
      * @throws Exception
@@ -274,19 +305,39 @@ public class Detector implements ClassFileTransformer {
         return jarFile;
     }
 
+    /**
+     * Log the given information.
+     * 
+     * @param string
+     *            A string
+     */
     private static void log(String string) {
         System.out.println(string);
     }
 
-    private static void copyBytecode(String myName, OutputStream out) throws Exception {
-        try (InputStream is = Detector.class.getResourceAsStream("/" + myName + ".class")) {
+    /**
+     * Copy the specified class to the given output stream
+     * 
+     * @param clazz
+     *            The class name as internal name (i.e. with / instead of . in
+     *            the name)
+     * @param out
+     *            The output stream to write to
+     * @throws Exception
+     */
+    private static void copyBytecode(String clazz, OutputStream out) throws Exception {
+        try (InputStream is = Detector.class.getResourceAsStream("/" + clazz + ".class")) {
             copyBytes(is, out);
         }
     }
 
     /**
+     * Copy the content of the input stream to the output stream
+     * 
      * @param in
+     *            The source
      * @param out
+     *            The destination
      * @throws IOException
      */
     private static void copyBytes(InputStream in, OutputStream out) throws IOException {
@@ -296,6 +347,12 @@ public class Detector implements ClassFileTransformer {
         }
     }
 
+    /**
+     * @param in
+     *            A input stream
+     * @return The data as byte[]
+     * @throws IOException
+     */
     private static byte[] toBytes(InputStream in) throws IOException {
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             copyBytes(in, out);
@@ -408,6 +465,5 @@ public class Detector implements ClassFileTransformer {
                     + "like '<Running log4jdetector agent>' in stdout of the target JVM.");
             System.exit(1);
         }
-
     }
 }
