@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  * 
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  * 
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,18 +31,15 @@ import java.net.URLClassLoader;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.security.ProtectionDomain;
+import java.time.LocalDateTime;
 import java.util.Properties;
+import java.util.UUID;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
-
 import com.sun.tools.attach.VirtualMachine;
-
-import sun.jvmstat.monitor.MonitoredHost;
-import sun.jvmstat.monitor.MonitoredVm;
-import sun.jvmstat.monitor.MonitoredVmUtil;
-import sun.jvmstat.monitor.VmIdentifier;
+import com.sun.tools.attach.VirtualMachineDescriptor;
 
 /**
  * Java agent looking for log4j classes and writing the result to the standard
@@ -60,38 +57,75 @@ import sun.jvmstat.monitor.VmIdentifier;
  * 
  */
 public class Detector implements ClassFileTransformer {
-    /** Type string for Log4j v1 (legacy) detections. */
+    /** System property to get the language version of the JVM. */
+    private static final String JVM_LANGUAGE_VERSION = "java.specification.version";
+
+    /** Type string for Log4j v1 (legacy) candidate detections. */
     private static final String LEGACY_LOG4J_CANDIDATE = "LegacyLog4jCandidate";
 
+    /** Type string for Log4j v1 (legacy) detections. */
+    private static final String LEGACY_LOG4J = "LegacyLog4j";
+
+    /** Type string for Log4j v2 candidate detections. */
+    private static final String LOG4J_CANDIDATE = "Log4j2Candidate";
+
     /** Type string for Log4j v2 detections. */
-    private static final String LOG4J_CANDIDATE = "Log4jCandidate";
+    private static final String LOG4J = "Log4j2";
 
     /** Last part of the class name of a log4j V1 logger. */
     private static final String LOGGER_V1 = ".log4j.Logger";
 
+    /** Exclusion for the {@link #LOGGER_V1} partial match - this FQN is a Log4j v2 interface. */
+    private static final String NON_LOGGER_V1 = "org.apache.logging.log4j.Logger";
+
+    /** FQN of a log4j V1 logger. */
+    private static final String LOGGER_V1_FULL = "org.apache.log4j.Logger";
+
     /** JVM internal class name version of {@link #LOGGER_V1}. */
     private static final String LOGGER_V1_INT = LOGGER_V1.replace('.', '/');
+
+    /** JVM internal class name version of {@link #NON_LOGGER_V1}. */
+    private static final String NON_LOGGER_V1_INT = NON_LOGGER_V1.replace('.', '/');
+
+    /** JVM internal class name version of {@link #LOGGER_V1_FULL}. */
+    private static final String LOGGER_V1_FULL_INT = LOGGER_V1_FULL.replace('.', '/');
 
     /** Last part of the class name of a log4j V2 logger. */
     private static final String LOGGER_V2 = ".log4j.core.Logger";
 
+    /** FQN of a log4j V2 logger. */
+    private static final String LOGGER_V2_FULL = "org.apache.logging.log4j.core.Logger";
+
     /** JVM internal class name version of {@link #LOGGER_V2}. */
     private static final String LOGGER_V2_INT = LOGGER_V2.replace('.', '/');
 
+    /** JVM internal class name version of {@link #LOGGER_V2_INT}. */
+    private static final String LOGGER_V2_FULL_INT = LOGGER_V2_INT.replace('.', '/');
+
     /**
-     * Last part of the log4j v2 JndiLookup class (the one containing the
-     * vulnerability).
+     * Last part of the log4j v2 JndiLookup class (the one containing the vulnerability).
      */
     private static final String JNDI_LOOKUP_CLASS = ".log4j.core.lookup.JndiLookup";
+
+    /**
+     * FQN of log4j v2 JndiLookup class (the one containing the vulnerability).
+     */
+    private static final String JNDI_LOOKUP_CLASS_FULL = "org.apache.logging.log4j.core.lookup.JndiLookup";
 
     /** JVM internal class name version of {@link #JNDI_LOOKUP_CLASS}. */
     private static final String JNDI_LOOKUP_CLASS_INT = JNDI_LOOKUP_CLASS.replace('.', '/');
 
+    /** JVM internal class name version of {@link #JNDI_LOOKUP_CLASS_FULL}. */
+    private static final String JNDI_LOOKUP_CLASS_FULL_INT = JNDI_LOOKUP_CLASS_FULL.replace('.', '/');
+
     /** Property specifying the agent version */
     private static final String DETECTOR_AGENT_VERSION = "log4jdetectorVer";
 
+    /** Property specifying the system property used to detect this instance when run as "controller". */
+    private static final String DETECTOR_CONTROLLER_ID = "log4jdetectorController";
+
     /** The agent version. */
-    private static final String AGENT_VERSION = "0.1";
+    private static final String AGENT_VERSION = "0.2";
 
     /** The agent argument to specify an optional output file. */
     private static final String OUTPUT_PATH = "outputPath";
@@ -105,12 +139,11 @@ public class Detector implements ClassFileTransformer {
     }
 
     /**
-     * @param outputPath
-     *            The file to write to or null
+     * @param outputPath The file to write to or null
      */
     public Detector(File outputPath) throws Exception {
         if (outputPath != null) {
-            log = new PrintStream[] { System.out, new PrintStream(new FileOutputStream(outputPath), true) };
+            log = new PrintStream[] { System.out, new PrintStream(new FileOutputStream(outputPath, true), true) };
         } else {
             log = new PrintStream[] { System.out };
         }
@@ -174,9 +207,13 @@ public class Detector implements ClassFileTransformer {
         for (Class c : inst.getAllLoadedClasses()) {
             final String className = c.getName();
             // use hard coded checks - should be somewhat faster than a for loop
-            if (className.endsWith(JNDI_LOOKUP_CLASS) || className.endsWith(LOGGER_V2)) {
+            if (className.equals(JNDI_LOOKUP_CLASS_FULL) || className.equals(LOGGER_V2_FULL)) {
+                log(LOG4J, className, c.getClassLoader());
+            } else if (className.equals(LOGGER_V1_FULL)) {
+                log(LEGACY_LOG4J, className, c.getClassLoader());
+            } else if (className.endsWith(JNDI_LOOKUP_CLASS) || className.endsWith(LOGGER_V2)) {
                 log(LOG4J_CANDIDATE, className, c.getClassLoader());
-            } else if (className.endsWith(LOGGER_V1)) {
+            } else if (className.endsWith(LOGGER_V1) && !className.equals(NON_LOGGER_V1)) {
                 log(LEGACY_LOG4J_CANDIDATE, className, c.getClassLoader());
             }
         }
@@ -193,8 +230,17 @@ public class Detector implements ClassFileTransformer {
      *            The used classloader or null
      */
     private void log(String type, String clazz, ClassLoader cl) {
+        logOut("<" + LocalDateTime.now().toString() + "> " + type + ": " + clazz + " @" + resolvePath(clazz, cl));
+    }
+
+    /**
+     * Log to all {@link #log} streams.
+     * 
+     * @param str The string to log
+     */
+    private void logOut(String str) {
         for (PrintStream out : log) {
-            out.println(type + ": " + clazz + " @" + resolvePath(clazz, cl));
+            out.println(str);
         }
     }
 
@@ -203,29 +249,63 @@ public class Detector implements ClassFileTransformer {
      *            The class name
      * @param cl
      *            The owning classloader or null for the system loader
-     * @return The URL to load the given class from the passed classloader
+     * @return The location from where the class was loaded
      */
-    private static URL resolvePath(String className, ClassLoader cl) {
-        // FIXME add special handling for osgi classloaders?
+    private static String resolvePath(String className, ClassLoader cl) {
         if (cl == null) {
             cl = ClassLoader.getSystemClassLoader();
         }
-        return cl.getResource(className.replace('.', '/') + ".class");
+        final URL rawURL = cl.getResource(className.replace('.', '/') + ".class");
+        if (rawURL == null) {
+            return "<unknown>";
+        }
+        final String protocol = rawURL.getProtocol();
+        if ("jar".equals(protocol)) {
+            // jar file - return only the location of the jar file
+            final String spec = rawURL.getFile();
+            final int separator = spec.indexOf("!/");
+            if (separator > 0) {
+                return spec.substring(0, separator);
+            }
+            return rawURL.toString();
+        }
+
+        if ("bundle".equals(protocol) || "bundleresource".equals(protocol)) {
+            // osgi (probably felix or equinox)
+            try {
+                final Object bundle = cl.getClass().getMethod("getBundle").invoke(cl);
+                final Class<?> bundleClass = Class.forName("org.osgi.framework.Bundle");
+                final String symbolicName = String.valueOf(bundleClass.getMethod("getSymbolicName").invoke(bundle));
+                final String location = String.valueOf(bundleClass.getMethod("getLocation").invoke(bundle));
+                if (location != null) {
+                    return symbolicName + " Location: " + location;
+                }
+                if (symbolicName != null) {
+                    return symbolicName;
+                }
+            } catch (Exception e) {
+                // simply ignore - this is a best effort implementation to get the bundle name from the classloader
+            }
+        }
+        return rawURL.toString();
     }
 
     /**
      * {@inheritDoc}
      */
     @Override
-    public byte[] transform(ClassLoader loader, final String className, Class<?> classBeingRedefined,
-            ProtectionDomain protectionDomain, byte[] classfileBuffer) throws IllegalClassFormatException {
+    public byte[] transform(ClassLoader loader, final String className, Class<?> classBeingRedefined, ProtectionDomain protectionDomain, byte[] classfileBuffer)
+            throws IllegalClassFormatException {
         try {
             if (className != null) {
-                // use hard coded checks - should be somewhat faster than a for
-                // loop
-                if (className.endsWith(JNDI_LOOKUP_CLASS_INT) || className.endsWith(LOGGER_V2_INT)) {
+                // use hard coded checks - should be somewhat faster than a for loop
+                if (className.equals(JNDI_LOOKUP_CLASS_FULL_INT) || className.equals(LOGGER_V2_FULL_INT)) {
+                    log(LOG4J, className, loader);
+                } else if (className.equals(LOGGER_V1_FULL_INT)) {
+                    log(LEGACY_LOG4J, className, loader);
+                } else if (className.endsWith(JNDI_LOOKUP_CLASS_INT) || className.endsWith(LOGGER_V2_INT)) {
                     log(LOG4J_CANDIDATE, className, loader);
-                } else if (className.endsWith(LOGGER_V1_INT)) {
+                } else if (className.endsWith(LOGGER_V1_INT) && !className.equals(NON_LOGGER_V1_INT)) {
                     log(LEGACY_LOG4J_CANDIDATE, className, loader);
                 }
             }
@@ -245,31 +325,28 @@ public class Detector implements ClassFileTransformer {
                 // Check if we're running under the same UID like the target
                 // JVM. If not, log warning as it might fail to attach.
                 if (we != null && !we.equals(getUID(pid))) {
-                    log("\nWarning: patching for JVM process " + pid
-                            + " might fail because it runs under a different user");
+                    log("\nWarning: patching for JVM process " + pid + " might fail because it runs under a different user");
                     log("  Our uid == " + we + ", their uid == " + getUID(pid));
                 }
-                VirtualMachine vm = VirtualMachine.attach(pid);
-                // If the target VM is already patched then skip.
+                final VirtualMachine vm = VirtualMachine.attach(pid);
+                // If the target VM is patched with an other version then skip.
                 // Notice that the agent class gets loaded by the system
-                // class loader, so we
-                // can't unload or update it. If we'd re-deploy the agent
-                // one more time, we'd
-                // just rerun 'agentmain()' from the already loaded agent
-                // version.
-                Properties props = vm.getSystemProperties();
+                // class loader, so we can't unload or update it. Re-deploying the agent
+                // just reruns 'agentmain()' from the already loaded agent version.
+                final Properties props = vm.getSystemProperties();
                 if (props == null) {
                     log("Error: could not verify '" + DETECTOR_AGENT_VERSION + "' in JVM process " + pid);
                     continue;
                 }
-                String version = props.getProperty(DETECTOR_AGENT_VERSION);
-                if (version != null) {
+                final String version = props.getProperty(DETECTOR_AGENT_VERSION);
+                if (AGENT_VERSION.equals(version)) {
+                    log("JVM process " + pid + " is already patched - rerun the listing anyway");
+                } else if (version != null) {
                     log("Skipping patch for JVM process " + pid + ", patch version " + version + " already applied");
                     continue;
                 }
-                // unpatched target VM, apply patch
-                final String outputPath = outputFolder != null
-                        ? OUTPUT_PATH + "=" + new File(outputFolder, "log4jdetector_" + pid + ".log").getAbsolutePath()
+                // apply patch to target vm
+                final String outputPath = outputFolder != null ? OUTPUT_PATH + "=" + new File(outputFolder, "log4jdetector_" + pid + ".log").getAbsolutePath()
                         : null;
                 vm.loadAgent(jarFile.getAbsolutePath(), outputPath);
             } catch (Exception e) {
@@ -441,7 +518,6 @@ public class Detector implements ClassFileTransformer {
 
     public static void main(String args[]) throws Exception {
         if (Detector.class.getResource("/sun.jvmstat.monitor.MonitoredVm".replace('.', '/') + ".class") == null) {
-            log("no tools jar on the classpath - trying to locate it");
             final File tools = new File(System.getProperty("java.home"), "../lib/tools.jar");
             if (tools.exists()) {
                 rerunWithToolsJar(args, tools);
@@ -452,23 +528,42 @@ public class Detector implements ClassFileTransformer {
             System.exit(1);
         }
         if (args.length == 0) {
-            final String ourClazz = Detector.class.getName();
-            log("usage: java -jar log4j-detector.jar <pid> [<pid> ...]");
-            log("Specify output path for logs: -Doutput=<base/output/path/for/log>");
-            log("currently visible java processes:");
-            MonitoredHost host = MonitoredHost.getMonitoredHost((String) null);
-            for (Integer p : host.activeVms()) {
-                MonitoredVm jvm = host.getMonitoredVm(new VmIdentifier(p.toString()));
-                String mainClass = MonitoredVmUtil.mainClass(jvm, true);
-                if (ourClazz.equals(mainClass)) {
-                    // skip our selfs
-                    continue;
+            // mark our JVM so that we can exclude id from the pid list
+            final String selfId = UUID.randomUUID().toString();
+            System.setProperty(DETECTOR_CONTROLLER_ID, selfId);
+            final String ourJavaVersion = System.getProperty(JVM_LANGUAGE_VERSION);
+            final String ourUser = System.getProperty("user.name");
+            log("usage: java [-Doutput=<base/output/path/for/log>] -jar log4j-detector.jar <pid> [<pid> ...]");
+            log("currently visible java processes for " + ourUser + "@ Java Version " + ourJavaVersion + ":");
+            for (VirtualMachineDescriptor desc : VirtualMachine.list()) {
+                final VirtualMachine jvm = VirtualMachine.attach(desc);
+                try {
+                    final Properties sysProps = jvm.getSystemProperties();
+                    if (selfId.equals(sysProps.get(DETECTOR_CONTROLLER_ID))) {
+                        // our process
+                        continue;
+                    }
+                    final String user = sysProps.getProperty("user.name");
+                    final String agent = sysProps.getProperty(DETECTOR_AGENT_VERSION);
+                    if (agent != null) {
+                        // already instrumented process
+                        log("Instrumented: " + desc.id() + ": " + desc.displayName() + " - Java Version: " + sysProps.getProperty("java.version") + " User: "
+                                + user + " Agent Version: " + agent);
+                    } else if (ourJavaVersion.equals(sysProps.getProperty(JVM_LANGUAGE_VERSION)) && ourUser.equals(user)) {
+                        log(desc.id() + ": " + desc.displayName() + " - Java Version: " + sysProps.getProperty("java.version") + " User: " + user);
+                    } else {
+                        // jvm with different user or different java version - we may not be able to patch it properly!
+                        log("( " + desc.id() + ": " + desc.displayName() + " - Java Version: " + sysProps.get("java.version") + " User: " + user + " )");
+                    }
+                } catch (Exception e) {
+                    log(desc.id() + ": " + desc.displayName() + " - Error while getting further infos: " + e.getMessage());
+                } finally {
+                    jvm.detach();
                 }
-                log(p + ": " + mainClass);
             }
             System.exit(1);
         }
-        boolean succeeded = loadInstrumentationAgent(args, mkdirs(System.getProperty("output")));
+        final boolean succeeded = loadInstrumentationAgent(args, mkdirs(System.getProperty("output")));
         if (succeeded) {
             System.exit(0);
         } else {
